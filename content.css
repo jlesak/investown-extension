@@ -1,0 +1,147 @@
+/* ===========================================================================
+ * Investown Partner Summary — Chrome Extension Styles
+ * =========================================================================== */
+
+/* ---------------------------------------------------------------------------
+ * CSS Custom Properties (scoped to extension selectors)
+ * --------------------------------------------------------------------------- */
+
+#investown-ext-partner-summary,
+.ext-partner-col,
+.ext-partner-col-header {
+  --ext-color-primary: #1551E5;
+  --ext-color-bg-light: #F0F7FF;
+  --ext-color-border: #DBEAFE;
+  --ext-color-text-dark: #1F2937;
+  --ext-color-text-darkest: #04102A;
+  --ext-color-text-secondary: #6B7280;
+  --ext-color-text-muted: #9CA3AF;
+}
+
+/* ---------------------------------------------------------------------------
+ * Utility Classes
+ * --------------------------------------------------------------------------- */
+
+.ext-truncate {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---------------------------------------------------------------------------
+ * Property Detail — Partner Summary Widget
+ * --------------------------------------------------------------------------- */
+
+#investown-ext-partner-summary {
+  background: var(--ext-color-bg-light);
+  border: 1px solid var(--ext-color-border);
+  border-left: 3px solid var(--ext-color-primary);
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 16px;
+  font-family: inherit;
+  color: var(--ext-color-text-dark);
+  line-height: 1.5;
+}
+
+#investown-ext-partner-summary .ext-partner-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ext-color-primary);
+  margin-bottom: 12px;
+}
+
+#investown-ext-partner-summary .ext-partner-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 4px 0;
+}
+
+#investown-ext-partner-summary .ext-partner-label {
+  font-size: 13px;
+  color: var(--ext-color-text-secondary);
+}
+
+#investown-ext-partner-summary .ext-partner-value {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ext-color-text-dark);
+  white-space: nowrap;
+}
+
+#investown-ext-partner-summary .ext-partner-value--highlight {
+  color: var(--ext-color-primary);
+}
+
+#investown-ext-partner-summary .ext-partner-divider {
+  height: 1px;
+  background: var(--ext-color-border);
+  margin: 8px 0;
+}
+
+#investown-ext-partner-summary .ext-partner-error {
+  font-size: 13px;
+  color: var(--ext-color-text-muted);
+  text-align: center;
+  padding: 8px 0;
+}
+
+/* ---------------------------------------------------------------------------
+ * Listing Page — Partner Column (badge per card row)
+ * --------------------------------------------------------------------------- */
+
+.ext-partner-col {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  flex: 1 1 0%;
+  min-width: 100px;
+  max-width: 100px;
+  gap: 2px;
+  padding-left: 8px;
+  pointer-events: none;
+  box-sizing: border-box;
+}
+
+.ext-partner-col .ext-col-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ext-color-primary);
+  line-height: 1.3;
+}
+
+.ext-partner-col .ext-col-investment {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ext-color-text-darkest);
+  white-space: nowrap;
+  line-height: 1.3;
+}
+
+.ext-partner-col .ext-col-projects {
+  font-size: 12px;
+  color: var(--ext-color-text-secondary);
+  white-space: nowrap;
+  line-height: 1.3;
+}
+
+/* ---------------------------------------------------------------------------
+ * Listing Page — Partner Column Header
+ * --------------------------------------------------------------------------- */
+
+.ext-partner-col-header {
+  display: flex;
+  flex: 1 1 0%;
+  min-width: 100px;
+  max-width: 100px;
+  align-items: center;
+  padding-left: 8px;
+  box-sizing: border-box;
+}
+
+.ext-partner-col-header .ext-col-header-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ext-color-text-darkest);
+}
