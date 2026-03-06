@@ -16,30 +16,50 @@ A Chrome extension that enhances [Investown.cz](https://my.investown.cz) by disp
 
 ## Installation
 
-Since this extension is not published on the Chrome Web Store, you need to install it manually as an unpacked extension.
+Since this extension is not published on the Chrome Web Store, you need to install it manually as an unpacked extension. No build step is required — just download and load into Chrome.
 
 ### Prerequisites
 
 - Google Chrome (or any Chromium-based browser like Edge, Brave, etc.)
 - An active [Investown.cz](https://my.investown.cz) account
 
-### Steps
+### Step 1: Download the Extension
 
-1. **Download or clone** this repository:
+Choose **one** of the following methods:
 
-   ```bash
-   git clone https://github.com/jlesak/investown-extension.git
-   ```
+#### Option A: Download ZIP (recommended for most users)
 
-2. **Open the extensions page** in Chrome:
-   - Navigate to `chrome://extensions/`
-   - Or go to **Menu > Extensions > Manage Extensions**
+1. Go to the [GitHub repository](https://github.com/jlesak/investown-extension)
+2. Click the green **"<> Code"** button
+3. Select **"Download ZIP"**
+4. Extract (unzip) the downloaded file — you will get a folder named `investown-extension-main`
 
-3. **Enable Developer Mode** using the toggle in the top-right corner.
+#### Option B: Clone with Git
 
-4. **Click "Load unpacked"** and select the `investown-extension` folder (the root of this repository).
+If you have Git installed, run:
 
-5. The extension icon should appear in your toolbar. Navigate to [my.investown.cz](https://my.investown.cz) and log in — the partner summary will appear automatically.
+```bash
+git clone https://github.com/jlesak/investown-extension.git
+```
+
+This creates an `investown-extension` folder in your current directory.
+
+### Step 2: Load the Extension in Chrome
+
+1. Open Chrome and navigate to `chrome://extensions/` (or go to **Menu > Extensions > Manage Extensions**)
+2. Enable **Developer Mode** using the toggle in the top-right corner
+3. Click **"Load unpacked"**
+4. Select the extracted folder (`investown-extension-main` if you downloaded ZIP, or `investown-extension` if you cloned with Git)
+5. The extension icon should appear in your toolbar
+
+### Step 3: Use It
+
+Navigate to [my.investown.cz](https://my.investown.cz) and log in — the partner summary will appear automatically.
+
+### Updating the Extension
+
+- **ZIP users:** Download the latest ZIP again, extract it, and in `chrome://extensions/` click the reload button on the extension card.
+- **Git users:** Run `git pull` in the extension folder, then click the reload button on `chrome://extensions/`.
 
 ## Usage
 
