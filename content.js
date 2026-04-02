@@ -22,12 +22,18 @@ const LISTING_MUTATION_DEBOUNCE_MS = 300;
 const WIDGET_INSERTION_RETRY_BASE_MS = 500;
 const MAX_WIDGET_INSERTION_RETRIES = 5;
 const MAX_CONCURRENT_API_REQUESTS = 3;
-const MIN_COLUMNS_FOR_HEADER_ROW = 6;
-const FIRST_COLUMN_CONSTRAINED_WIDTH = '430px';
+const DIVERSIFICATION_SAFE_THRESHOLD = 0.15;    // < 15% = safe (green)
+const DIVERSIFICATION_WARNING_THRESHOLD = 0.25;  // 15-25% = warning (orange), > 25% = danger (red)
+
+const REPAYMENT_STATUS = {
+  DELAYED: 'Delayed',
+  COLLECTION: 'Collection',
+  EXITED_OR_REPAID: 'ExitedOrRepaid',
+  REPAID: 'Repaid',
+};
 
 const BADGE_ATTR = 'data-ext-badge';
-const HEADER_ATTR = 'data-ext-header';
-const COL_WIDTH_ADJUSTED = 'data-ext-col-adjusted';
+const PROPERTY_LINK_SELECTOR = 'a[href^="/property/"]';
 
 // ===========================================================================
 // Safe API References (MAIN world protection against page overrides)
@@ -37,6 +43,75 @@ const safeFetch = fetch.bind(window);
 const safeJsonParse = JSON.parse;
 const safeJsonStringify = JSON.stringify;
 const safeAtob = atob;
+const safeGetItem = localStorage.getItem.bind(localStorage);
+const safeObjectKeys = Object.keys;
+
+// ===========================================================================
+// TTL Cache
+// ===========================================================================
+
+/**
+ * A simple cache with time-to-live expiration and maximum size limit.
+ * When the cache exceeds maxSize, the oldest entries are evicted (FIFO).
+ */
+class TTLCache {
+  /**
+   * @param {number} ttlMs - Time-to-live in milliseconds. Entries older than this are expired.
+   * @param {number} [maxSize=200] - Maximum number of entries before FIFO eviction.
+   */
+  constructor(ttlMs, maxSize = 200) {
+    this._ttlMs = ttlMs;
+    this._maxSize = maxSize;
+    this._map = new Map();
+  }
+
+  /**
+   * Retrieves a cached value if it exists and hasn't expired.
+   * @param {string} key - The cache key.
+   * @returns {*|undefined} The cached value, or undefined if missing/expired.
+   */
+  get(key) {
+    const entry = this._map.get(key);
+    if (!entry) return undefined;
+    if (Date.now() - entry.timestamp > this._ttlMs) {
+      this._map.delete(key);
+      return undefined;
+    }
+    return entry.value;
+  }
+
+  /**
+   * Stores a value in the cache with the current timestamp.
+   * Evicts the oldest entry if the cache exceeds maxSize.
+   * @param {string} key - The cache key.
+   * @param {*} value - The value to store.
+   */
+  set(key, value) {
+    this._map.delete(key); // re-insert to refresh insertion order
+    this._map.set(key, { value, timestamp: Date.now() });
+    if (this._map.size > this._maxSize) {
+      const oldest = this._map.keys().next().value;
+      this._map.delete(oldest);
+    }
+  }
+
+  /**
+   * Checks whether a non-expired entry exists for the given key.
+   * @param {string} key - The cache key.
+   * @returns {boolean}
+   */
+  has(key) {
+    return this.get(key) !== undefined;
+  }
+
+  /**
+   * Removes an entry from the cache.
+   * @param {string} key - The cache key.
+   */
+  delete(key) {
+    this._map.delete(key);
+  }
+}
 
 // ===========================================================================
 // State Variables
@@ -48,17 +123,30 @@ let currentPageType = null;
 let listingNavigationId = 0; // incremented on each listing page entry, used as stale guard
 
 // Caches
-const summaryCache = new Map();      // slug → { data: Summary, timestamp: number }
-const propertyMetaCache = new Map(); // slug → Property (GraphQL response object)
-const partnerCache = new Map();      // companyIdentifier → Summary
+const summaryCache = new TTLCache(CACHE_TTL_MS);
+const propertyMetaCache = new TTLCache(CACHE_TTL_MS);
+const partnerCache = new TTLCache(CACHE_TTL_MS);
 
 // In-flight request tracking
 const pendingFetches = new Set();    // slugs currently being fetched
+const pendingPartnerFetches = new Map(); // companyId → Promise<Summary>
+const pendingPropertyFetches = new Map(); // slug → Promise<Object>
+
+// Portfolio statistics cache
+const portfolioStatsCache = new TTLCache(CACHE_TTL_MS, 1);
 
 // Observers and timers
 let listingObserver = null;
 let listingDebounceTimer = null;
 let reinsertTimer = null;
+// Re-inject widget if React removes it during DOM reconciliation (debounced).
+// Managed via connectWidgetObserver/disconnectWidgetObserver — only active on property pages.
+const widgetObserver = new MutationObserver(() => {
+  if (currentPageType === 'property' && currentSlug && !document.getElementById(WIDGET_ID)) {
+    clearTimeout(reinsertTimer);
+    reinsertTimer = setTimeout(() => ensureWidgetPresent(currentSlug), WIDGET_REINSERTION_DEBOUNCE_MS);
+  }
+});
 
 // ===========================================================================
 // Utility Functions
@@ -78,46 +166,12 @@ function formatCZK(value) {
 }
 
 /**
- * Escapes a string for safe insertion into HTML.
- * Uses a temporary DOM element to leverage the browser's built-in escaping.
- * @param {string} str - The raw string to escape.
- * @returns {string} HTML-safe string with entities escaped.
- */
-function escapeHtml(str) {
-  const div = document.createElement('div');
-  div.textContent = str;
-  return div.innerHTML;
-}
-
-/**
  * Retrieves a cached summary for a property slug if it exists and hasn't expired.
  * @param {string} slug - The property slug to look up.
  * @returns {Object|null} The cached summary data, or null if missing or expired.
  */
 function getCached(slug) {
-  const entry = summaryCache.get(slug);
-  if (!entry) return null;
-  if (Date.now() - entry.timestamp > CACHE_TTL_MS) {
-    summaryCache.delete(slug);
-    return null;
-  }
-  return entry.data;
-}
-
-/**
- * Inserts an element as the second child of a parent container.
- * If the parent has at least one child, the element is placed immediately after it;
- * otherwise, the element is simply appended.
- * @param {HTMLElement} parent - The parent container.
- * @param {HTMLElement} element - The element to insert.
- */
-function insertAsSecondChild(parent, element) {
-  const firstChild = parent.children[0];
-  if (firstChild?.nextSibling) {
-    parent.insertBefore(element, firstChild.nextSibling);
-  } else {
-    parent.appendChild(element);
-  }
+  return summaryCache.get(slug) || null;
 }
 
 // ===========================================================================
@@ -144,11 +198,11 @@ function base64UrlDecode(str) {
  * @returns {string|null} The raw JWT token string, or null if not found or expired.
  */
 function getAuthToken() {
-  const keys = Object.keys(localStorage);
+  const keys = safeObjectKeys(localStorage);
   const idTokenKey = keys.find(key => key.endsWith('.idToken'));
   if (!idTokenKey) return null;
 
-  const token = localStorage.getItem(idTokenKey);
+  const token = safeGetItem(idTokenKey);
   if (!token) return null;
 
   try {
@@ -205,6 +259,7 @@ async function fetchProperty(slug, token) {
         name
         currentInvestmentRound {
           currentUsersTotalInvestment
+          repaymentStatus
           borrower {
             companyName
             companyIdentifier
@@ -214,6 +269,7 @@ async function fetchProperty(slug, token) {
     }
   `;
   const data = await executeGraphQLQuery(query, { slug }, token);
+  if (!data?.property) throw new Error('Missing property in API response');
   return data.property;
 }
 
@@ -245,6 +301,29 @@ async function fetchAllRelatedProperties(slug, token) {
     if (batch.length < PER_PAGE) break;
   }
   return allRelatedProperties;
+}
+
+/**
+ * Fetches the user's total portfolio size for diversification calculations.
+ * Uses a simple cache with TTL to avoid redundant API calls.
+ * @param {string} token - JWT bearer token.
+ * @returns {Promise<number>} The total portfolio size in CZK.
+ */
+async function fetchPortfolioStatistics(token) {
+  const cached = portfolioStatsCache.get('size');
+  if (cached !== undefined) return cached;
+
+  const query = `
+    query PortfolioStatistics {
+      portfolioStatistics {
+        portfolioSize
+      }
+    }
+  `;
+  const data = await executeGraphQLQuery(query, {}, token);
+  const size = data.portfolioStatistics?.portfolioSize || 0;
+  portfolioStatsCache.set('size', size);
+  return size;
 }
 
 // ===========================================================================
@@ -287,9 +366,14 @@ const apiLimiter = createLimiter(MAX_CONCURRENT_API_REQUESTS);
  */
 async function fetchPropertyCached(slug, token) {
   if (propertyMetaCache.has(slug)) return propertyMetaCache.get(slug);
-  const property = await fetchProperty(slug, token);
-  propertyMetaCache.set(slug, property);
-  return property;
+  if (pendingPropertyFetches.has(slug)) return pendingPropertyFetches.get(slug);
+
+  const promise = fetchProperty(slug, token)
+    .then(property => { propertyMetaCache.set(slug, property); return property; })
+    .finally(() => pendingPropertyFetches.delete(slug));
+
+  pendingPropertyFetches.set(slug, promise);
+  return promise;
 }
 
 /**
@@ -307,11 +391,18 @@ async function fetchPartnerDataForSlug(slug, token) {
   if (!companyId) return null;
 
   if (partnerCache.has(companyId)) return partnerCache.get(companyId);
+  if (pendingPartnerFetches.has(companyId)) return pendingPartnerFetches.get(companyId);
 
-  const relatedProperties = await fetchAllRelatedProperties(slug, token);
-  const summary = computeSummary(property, relatedProperties);
-  partnerCache.set(companyId, summary);
-  return summary;
+  const promise = fetchAllRelatedProperties(slug, token)
+    .then(related => {
+      const summary = computeSummary(property, related);
+      partnerCache.set(companyId, summary);
+      return summary;
+    })
+    .finally(() => pendingPartnerFetches.delete(companyId));
+
+  pendingPartnerFetches.set(companyId, promise);
+  return promise;
 }
 
 // ===========================================================================
@@ -333,30 +424,48 @@ function computeSummary(property, relatedProperties) {
   const currentInvestment = round?.currentUsersTotalInvestment || 0;
 
   const czkRelated = relatedProperties.filter(
-    property => property.interestAmount?.currency === 'CZK' || !property.interestAmount?.currency
+    rp => rp.interestAmount?.currency === 'CZK' || !rp.interestAmount?.currency
   );
 
   const relatedInvestment = czkRelated.reduce(
-    (sum, property) => sum + (property.investmentAmount || 0), 0
+    (sum, rp) => sum + (rp.investmentAmount || 0), 0
   );
 
   const totalYields = relatedProperties
-    .filter(property => property.interestAmount?.currency === 'CZK')
-    .reduce((sum, property) => sum + (property.interestAmount?.value || 0), 0);
+    .filter(rp => rp.interestAmount?.currency === 'CZK')
+    .reduce((sum, rp) => sum + (rp.interestAmount?.value || 0), 0);
 
   const investedCount =
-    czkRelated.filter(property => property.investmentAmount > 0).length +
+    czkRelated.filter(rp => rp.investmentAmount > 0).length +
     (currentInvestment > 0 ? 1 : 0);
 
   const totalCount = relatedProperties.length + 1;
 
   const totalInvestment = currentInvestment + relatedInvestment;
+
+  // Repayment status breakdown — only from current property (relatedProperties don't expose repaymentStatus)
+  const repaymentBreakdown = { regular: 0, delayed: 0, collection: 0, repaid: 0 };
+
+  if (currentInvestment > 0) {
+    const currentStatus = round?.repaymentStatus;
+    if (currentStatus === REPAYMENT_STATUS.DELAYED) {
+      repaymentBreakdown.delayed++;
+    } else if (currentStatus === REPAYMENT_STATUS.COLLECTION) {
+      repaymentBreakdown.collection++;
+    } else if (currentStatus === REPAYMENT_STATUS.EXITED_OR_REPAID || currentStatus === REPAYMENT_STATUS.REPAID) {
+      repaymentBreakdown.repaid++;
+    } else {
+      repaymentBreakdown.regular++;
+    }
+  }
+
   return {
     partnerName: borrower?.companyName || 'Neznámý partner',
     totalInvestment,
     totalYields,
     investedCount,
     totalCount,
+    repaymentBreakdown,
   };
 }
 
@@ -365,90 +474,182 @@ function computeSummary(property, relatedProperties) {
 // ===========================================================================
 
 /**
- * Renders the partner summary widget HTML for the property detail page.
+ * Creates a widget row element with a label and value.
+ * @param {string} label - The row label text.
+ * @param {string} value - The row value text.
+ * @param {string} [valueClass] - Additional CSS class for the value span.
+ * @returns {HTMLDivElement} The row element.
+ */
+function createWidgetRow(label, value, valueClass) {
+  const row = document.createElement('div');
+  row.className = 'ext-partner-row';
+
+  const labelEl = document.createElement('span');
+  labelEl.className = 'ext-partner-label';
+  labelEl.textContent = label;
+
+  const valueEl = document.createElement('span');
+  valueEl.className = valueClass ? 'ext-partner-value ' + valueClass : 'ext-partner-value';
+  valueEl.textContent = value;
+
+  row.append(labelEl, valueEl);
+  return row;
+}
+
+/**
+ * Creates a spacer element matching the native Investown empty-span spacing pattern.
+ * @param {boolean} [large=false] - If true, uses larger spacing (12px instead of 4px).
+ * @returns {HTMLSpanElement} The spacer element.
+ */
+function createWidgetSpacer(large) {
+  const spacer = document.createElement('span');
+  spacer.className = large ? 'ext-partner-spacer ext-partner-spacer--lg' : 'ext-partner-spacer';
+  return spacer;
+}
+
+/**
+ * Creates the repayment status row element for the widget.
+ * @param {{ regular: number, delayed: number, collection: number, repaid: number }} breakdown - Repayment counts.
+ * @returns {HTMLDivElement|null} The repayment row element, or null if all counts are zero.
+ */
+function createRepaymentRow(breakdown) {
+  if (!breakdown) return null;
+  const { regular, delayed, collection, repaid } = breakdown;
+  if (regular === 0 && delayed === 0 && collection === 0 && repaid === 0) return null;
+
+  const row = document.createElement('div');
+  row.className = 'ext-partner-row ext-partner-row--repayment';
+
+  const label = document.createElement('span');
+  label.className = 'ext-partner-label';
+  label.textContent = 'Stav splácení';
+
+  const valueContainer = document.createElement('span');
+  valueContainer.className = 'ext-partner-value ext-partner-repayment';
+
+  const parts = [
+    { count: regular, cls: 'ext-repayment--regular', text: '✓ ' },
+    { count: delayed, cls: 'ext-repayment--delayed', text: '⚠ ' },
+    { count: collection, cls: 'ext-repayment--collection', text: '✕ ' },
+    { count: repaid, cls: 'ext-repayment--repaid', text: '✓ ', suffix: ' splac.' },
+  ];
+
+  let first = true;
+  for (const { count, cls, text, suffix } of parts) {
+    if (count <= 0) continue;
+    if (!first) valueContainer.append(' · ');
+    first = false;
+    const span = document.createElement('span');
+    span.className = cls;
+    span.textContent = text + count + (suffix || '');
+    valueContainer.appendChild(span);
+  }
+
+  row.append(label, valueContainer);
+  return row;
+}
+
+/**
+ * Renders the partner summary widget as a DOM element for the property detail page.
  * Produces either an error message or a full summary with investment totals.
  * @param {Object} options - Render options.
  * @param {Object} [options.summary] - The computed partner summary to display.
  * @param {string} [options.error] - Error type: 'auth' for unauthenticated, 'fetch' for API failure.
- * @returns {string} HTML string ready for insertion into the DOM.
+ * @returns {HTMLDivElement} Widget element ready for insertion into the DOM.
  */
 function renderWidget({ summary, error }) {
+  const widget = document.createElement('div');
+  widget.id = WIDGET_ID;
+
   if (error) {
     const messages = {
       auth: 'Nepřihlášen — nelze načíst data',
       fetch: 'Chyba při načítání dat partnera',
     };
-    return `
-      <div id="${WIDGET_ID}">
-        <div class="ext-partner-error">${messages[error] || 'Neočekávaná chyba'}</div>
-      </div>
-    `;
+    const errorEl = document.createElement('div');
+    errorEl.className = 'ext-partner-error';
+    errorEl.textContent = messages[error] || 'Neočekávaná chyba';
+    widget.appendChild(errorEl);
+    return widget;
   }
 
-  return `
-    <div id="${WIDGET_ID}">
-      <div class="ext-partner-title ext-truncate" title="${escapeHtml(summary.partnerName)}">
-        ${escapeHtml(summary.partnerName)}
-      </div>
-      <div class="ext-partner-row">
-        <span class="ext-partner-label">Celková investice u partnera</span>
-        <span class="ext-partner-value ext-partner-value--highlight">
-          ${formatCZK(summary.totalInvestment)}
-        </span>
-      </div>
-      <div class="ext-partner-divider"></div>
-      <div class="ext-partner-row">
-        <span class="ext-partner-label">Celkové výnosy od partnera</span>
-        <span class="ext-partner-value">${formatCZK(summary.totalYields)}</span>
-      </div>
-      <div class="ext-partner-divider"></div>
-      <div class="ext-partner-row">
-        <span class="ext-partner-label">Projektů s investicí</span>
-        <span class="ext-partner-value">
-          ${summary.investedCount} z ${summary.totalCount}
-        </span>
-      </div>
-    </div>
-  `;
+  // Section heading — matches native "Investice" heading style
+  const heading = document.createElement('span');
+  heading.className = 'ext-partner-heading';
+  heading.textContent = 'Partner';
+  widget.appendChild(heading);
+
+  // Partner name — styled as a link-like element
+  const name = document.createElement('div');
+  name.className = 'ext-partner-name ext-truncate';
+  name.title = summary.partnerName;
+  name.textContent = summary.partnerName;
+  widget.appendChild(name);
+
+  // Data rows with native-style spacers between them
+  widget.append(
+    createWidgetRow('Celková investice u partnera', formatCZK(summary.totalInvestment), 'ext-partner-value--highlight'),
+    createWidgetSpacer(),
+    createWidgetRow('Celkové výnosy od partnera', formatCZK(summary.totalYields)),
+    createWidgetSpacer(),
+    createWidgetRow('Projektů s investicí', summary.investedCount + ' z ' + summary.totalCount),
+  );
+
+  // Diversification row
+  if (summary.portfolioSize > 0) {
+    const concentration = summary.totalInvestment / summary.portfolioSize;
+    const diversificationClass = concentration < DIVERSIFICATION_SAFE_THRESHOLD
+      ? 'ext-partner-value--safe'
+      : concentration < DIVERSIFICATION_WARNING_THRESHOLD
+        ? 'ext-partner-value--warning'
+        : 'ext-partner-value--danger';
+    widget.append(
+      createWidgetSpacer(),
+      createWidgetRow('Podíl v portfoliu', (concentration * 100).toFixed(1) + ' %', diversificationClass),
+    );
+  }
+
+  // Repayment breakdown
+  const repaymentRow = createRepaymentRow(summary.repaymentBreakdown);
+  if (repaymentRow) {
+    widget.append(createWidgetSpacer(), repaymentRow);
+  }
+
+  return widget;
 }
 
 /**
- * Creates a badge element for the listing page showing partner data for a single card row.
- * Displays partner name, total investment amount, and project count.
+ * Creates a badge element showing the total investment at a partner.
+ * Displayed inside the yield column of each listing card.
  * @param {Object} summary - The computed partner summary.
  * @returns {HTMLDivElement} The badge element ready for DOM insertion.
  */
 function renderBadge(summary) {
   const el = document.createElement('div');
-  el.className = 'ext-partner-col';
+  el.className = 'ext-partner-badge';
   el.setAttribute(BADGE_ATTR, '');
 
-  const name = document.createElement('span');
-  name.className = 'ext-col-name ext-truncate';
-  name.title = summary.partnerName;
-  name.textContent = summary.partnerName;
+  const label = document.createElement('span');
+  label.className = 'ext-badge-label';
+  label.textContent = 'U partnera';
 
-  const investment = document.createElement('span');
-  investment.className = 'ext-col-investment';
-  investment.textContent = formatCZK(summary.totalInvestment);
+  const value = document.createElement('span');
+  value.className = 'ext-badge-value';
+  value.textContent = formatCZK(summary.totalInvestment);
 
-  const projects = document.createElement('span');
-  projects.className = 'ext-col-projects';
-  projects.textContent = summary.investedCount + ' z ' + summary.totalCount + ' proj.';
-
-  el.append(name, investment, projects);
+  el.append(label, value);
   return el;
 }
 
 /**
- * Creates an empty placeholder badge column for the listing page.
- * Used as a layout placeholder while data is loading, or for properties with no investment.
- * @returns {HTMLDivElement} An empty badge element with the badge attribute.
+ * Creates a "new partner" badge for cards with no existing investment at the partner.
+ * @returns {HTMLDivElement} The badge element ready for DOM insertion.
  */
-function renderEmptyColumn() {
+function renderNewPartnerBadge() {
   const el = document.createElement('div');
-  el.className = 'ext-partner-col';
+  el.className = 'ext-partner-badge--new';
   el.setAttribute(BADGE_ATTR, '');
+  el.textContent = 'Nový partner';
   return el;
 }
 
@@ -477,6 +678,27 @@ function isInSidebar(el) {
 }
 
 /**
+ * Finds DOM elements whose direct text content matches the given string,
+ * using a TreeWalker for efficient traversal instead of querySelectorAll('span, div').
+ * @param {Node} root - The root node to search within.
+ * @param {string} text - The exact text to match (trimmed).
+ * @returns {HTMLElement[]} Array of parent elements whose text nodes match.
+ */
+function findElementsByText(root, text) {
+  const results = [];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      return node.textContent.trim() === text ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
+    },
+  });
+  while (walker.nextNode()) {
+    const parent = walker.currentNode.parentElement;
+    if (parent) results.push(parent);
+  }
+  return results;
+}
+
+/**
  * Locates the best DOM position for injecting the partner summary widget.
  * Tries two strategies:
  *   1. Finds the "Investice" section heading in the right sidebar
@@ -486,11 +708,10 @@ function isInSidebar(el) {
  */
 function findInjectionPoint() {
   // Strategy 1: Find "Investice" section heading in the right sidebar
-  const sidebar = document.querySelector('.layout-container-content');
-  const searchRoot = sidebar || document;
-  const headings = [...searchRoot.querySelectorAll('span, div')].filter(
-    el => el.textContent.trim() === 'Investice'
-  );
+  // Note: page may have multiple .layout-container-content elements; search all of them
+  const sidebars = document.querySelectorAll('.layout-container-content');
+  const searchRoots = sidebars.length > 0 ? [...sidebars] : [document.body];
+  const headings = searchRoots.flatMap(root => findElementsByText(root, 'Investice'));
   // Prefer the one actually in the sidebar; fall back to first match
   const heading = headings.find(el => isInSidebar(el)) || headings[0];
   if (heading?.parentElement) {
@@ -514,19 +735,19 @@ function removeWidget() {
 }
 
 /**
- * Inserts the partner summary widget HTML into the page.
+ * Inserts the partner summary widget element into the page.
  * Uses {@link findInjectionPoint} to locate the correct position.
- * Retries with exponential backoff (base {@link WIDGET_INSERTION_RETRY_BASE_MS})
+ * Retries with linear backoff (base {@link WIDGET_INSERTION_RETRY_BASE_MS})
  * up to {@link MAX_WIDGET_INSERTION_RETRIES} times if the injection point isn't available yet.
- * @param {string} html - The widget HTML string to insert.
+ * @param {HTMLElement} element - The widget element to insert.
  */
-function insertWidget(html) {
+function insertWidget(element) {
   let attempts = 0;
   const tryInsert = () => {
     const point = findInjectionPoint();
     if (point) {
       removeWidget();
-      point.target.insertAdjacentHTML(point.position, html);
+      point.target.insertAdjacentElement(point.position, element);
     } else if (attempts < MAX_WIDGET_INSERTION_RETRIES) {
       attempts++;
       setTimeout(tryInsert, WIDGET_INSERTION_RETRY_BASE_MS * attempts);
@@ -536,90 +757,37 @@ function insertWidget(html) {
 }
 
 /**
- * Constrains the first column of a listing row to a fixed width, making room
- * for the injected partner column. Marks the row with {@link COL_WIDTH_ADJUSTED}
- * to prevent duplicate adjustment.
- * @param {HTMLElement} row - The listing row element to adjust.
- */
-function shrinkFirstColumn(row) {
-  if (row.getAttribute(COL_WIDTH_ADJUSTED)) return;
-  const firstCol = row.children[0];
-  if (firstCol) {
-    firstCol.style.minWidth = FIRST_COLUMN_CONSTRAINED_WIDTH;
-    firstCol.style.maxWidth = FIRST_COLUMN_CONSTRAINED_WIDTH;
-    firstCol.style.overflow = 'hidden';
-  }
-  row.setAttribute(COL_WIDTH_ADJUSTED, '');
-}
-
-/**
- * Injects the "Partner" header column into the listing page header row.
- * Finds the header by locating the "Výnos" sort button and walking up to
- * the parent row with {@link MIN_COLUMNS_FOR_HEADER_ROW}+ column children.
- */
-function injectHeaderColumn() {
-  if (document.querySelector(`[${HEADER_ATTR}]`)) return;
-
-  // Find the "Výnos" sort button, then walk up to the header row
-  const allButtons = document.querySelectorAll('.layout-container-content button');
-  const vynosBtn = [...allButtons].find(button => button.textContent?.trim().startsWith('Výnos'));
-  if (!vynosBtn) return;
-
-  // Walk up from the button to find the header row (the flex parent with enough column children)
-  let headerRow = vynosBtn.parentElement;
-  while (headerRow && headerRow.children.length < MIN_COLUMNS_FOR_HEADER_ROW) {
-    headerRow = headerRow.parentElement;
-  }
-  if (!headerRow) return;
-
-  shrinkFirstColumn(headerRow);
-
-  const header = document.createElement('div');
-  header.className = 'ext-partner-col-header';
-  header.setAttribute(HEADER_ATTR, '');
-
-  const label = document.createElement('span');
-  label.className = 'ext-col-header-label';
-  label.textContent = 'Partner';
-  header.appendChild(label);
-
-  insertAsSecondChild(headerRow, header);
-}
-
-/**
- * Injects a partner badge into a listing card element.
- * Shows the partner summary if the total investment is positive,
- * otherwise shows an empty placeholder column.
+ * Injects a partner badge into the yield column of a listing card element.
+ * Shows the investment amount or a "new partner" indicator.
  * @param {HTMLElement} cardElement - The listing card (anchor) element.
  * @param {Object|null} summary - The computed partner summary, or null.
  */
 function injectBadge(cardElement, summary) {
   if (cardElement.querySelector(`[${BADGE_ATTR}]`)) return;
+  const yieldCol = cardElement.children[1];
+  if (!yieldCol) return;
 
-  shrinkFirstColumn(cardElement);
+  // null summary = failed fetch — don't show misleading badge
+  if (!summary) return;
 
-  const col = (summary && summary.totalInvestment > 0)
-    ? renderBadge(summary)
-    : renderEmptyColumn();
+  // Switch yield column to vertical stack so badge appears below yield text
+  yieldCol.classList.add('ext-yield-col--stacked');
 
-  insertAsSecondChild(cardElement, col);
+  if (summary.totalInvestment === 0) {
+    yieldCol.appendChild(renderNewPartnerBadge());
+  } else {
+    yieldCol.appendChild(renderBadge(summary));
+  }
 }
 
 /**
- * Removes all injected listing badges, header columns, and width adjustments.
- * Restores the original listing layout.
+ * Removes all injected listing badges and restores yield column styles.
  */
 function removeAllBadges() {
-  document.querySelectorAll(`[${BADGE_ATTR}]`).forEach(el => el.remove());
-  document.querySelectorAll(`[${HEADER_ATTR}]`).forEach(el => el.remove());
-  document.querySelectorAll(`[${COL_WIDTH_ADJUSTED}]`).forEach(row => {
-    const firstCol = row.children[0];
-    if (firstCol) {
-      firstCol.style.minWidth = '';
-      firstCol.style.maxWidth = '';
-      firstCol.style.overflow = '';
-    }
-    row.removeAttribute(COL_WIDTH_ADJUSTED);
+  document.querySelectorAll(`[${BADGE_ATTR}]`).forEach(el => {
+    const parent = el.parentElement;
+    el.remove();
+    if (parent) parent.classList.remove('ext-yield-col--stacked');
   });
 }
 
@@ -672,16 +840,17 @@ async function injectPartnerSummary(slug) {
 
     // Phase 3: Fetch fresh data in background
     try {
-      const [property, relatedProperties] = await Promise.all([
+      const [property, relatedProperties, portfolioSize] = await Promise.all([
         fetchProperty(slug, token),
         fetchAllRelatedProperties(slug, token),
+        fetchPortfolioStatistics(token),
       ]);
 
       // Guard: user navigated away during fetch — discard stale result
       if (currentSlug !== slug) return;
 
-      const summary = computeSummary(property, relatedProperties);
-      summaryCache.set(slug, { data: summary, timestamp: Date.now() });
+      const summary = { ...computeSummary(property, relatedProperties), portfolioSize };
+      summaryCache.set(slug, summary);
 
       // Update widget (replaces cached version or inserts for first time)
       removeWidget();
@@ -707,12 +876,37 @@ async function injectPartnerSummary(slug) {
 // ===========================================================================
 
 /**
+ * Waits until listing cards are present in the DOM, then calls the callback.
+ * If cards are already present, calls the callback synchronously.
+ * Uses a MutationObserver on document.body to detect when React renders the listing.
+ * @param {function} callback - The function to call once listing cards are ready.
+ */
+function waitForListingCards(callback) {
+  if (document.querySelectorAll(PROPERTY_LINK_SELECTOR).length > 0) {
+    callback();
+    return;
+  }
+  const observer = new MutationObserver(() => {
+    if (document.querySelectorAll(PROPERTY_LINK_SELECTOR).length > 0) {
+      observer.disconnect();
+      clearTimeout(timeout);
+      callback();
+    }
+  });
+  observer.observe(document.body, { childList: true, subtree: true });
+  const timeout = setTimeout(() => {
+    observer.disconnect();
+    console.warn('[Investown Extension] waitForListingCards: timed out after 30 s');
+  }, 30_000);
+}
+
+/**
  * Extracts property slugs and their corresponding link elements from the listing page.
  * Finds all anchor elements pointing to property detail pages.
  * @returns {{ link: HTMLAnchorElement, slug: string }[]} Array of link-slug pairs.
  */
 function extractSlugsFromCards() {
-  const links = document.querySelectorAll('a[href^="/property/"]');
+  const links = document.querySelectorAll(PROPERTY_LINK_SELECTOR);
   const results = [];
   for (const link of links) {
     const slug = getSlugFromPath(new URL(link.href).pathname);
@@ -722,10 +916,10 @@ function extractSlugsFromCards() {
 }
 
 /**
- * Processes the listing page: injects the "Partner" header column, adds placeholder
- * badges to all visible cards, then fetches partner data and replaces placeholders
- * with real badges. Uses the concurrency limiter to control API request parallelism.
- * A navigation ID guards against stale results when the user leaves the listing page.
+ * Processes the listing page: fetches partner data for each card and injects
+ * inline badges into the first column. Uses the concurrency limiter to control
+ * API request parallelism. A navigation ID guards against stale results when
+ * the user leaves the listing page.
  */
 async function processListingPage() {
   const capturedNavigationId = ++listingNavigationId;
@@ -736,32 +930,19 @@ async function processListingPage() {
   const cards = extractSlugsFromCards();
   if (cards.length === 0) return;
 
-  // Phase 1: Prepare layout (header + placeholders)
-  injectHeaderColumn();
-
-  for (const { link } of cards) {
-    if (link && !link.querySelector(`[${BADGE_ATTR}]`)) {
-      shrinkFirstColumn(link);
-      const placeholder = renderEmptyColumn();
-      insertAsSecondChild(link, placeholder);
-    }
-  }
-
-  // Phase 2: Fetch data and inject badges
   const tasks = cards.map(({ link, slug }) => {
     return apiLimiter(async () => {
-      // Stale navigation guard
       if (listingNavigationId !== capturedNavigationId) return;
 
-      const summary = await fetchPartnerDataForSlug(slug, token);
-      if (listingNavigationId !== capturedNavigationId) return;
+      try {
+        const summary = await fetchPartnerDataForSlug(slug, token);
+        if (listingNavigationId !== capturedNavigationId) return;
 
-      if (!link) return;
-
-      // Replace placeholder with actual data (or keep empty if no investment)
-      const existing = link.querySelector(`[${BADGE_ATTR}]`);
-      if (existing) existing.remove();
-      injectBadge(link, summary);
+        if (!link) return;
+        injectBadge(link, summary);
+      } catch (err) {
+        console.error('[Investown Extension] fetchPartnerData failed for', slug, err);
+      }
     });
   });
 
@@ -770,8 +951,8 @@ async function processListingPage() {
 
 /**
  * Sets up a MutationObserver on the listing page to detect dynamically loaded cards
- * (e.g. from infinite scroll). When new cards without badges are detected or the
- * header column is missing, triggers a re-processing of the listing page.
+ * (e.g. from infinite scroll). When new cards without badges are detected,
+ * triggers a re-processing of the listing page.
  * Debounced by {@link LISTING_MUTATION_DEBOUNCE_MS} to avoid excessive re-processing.
  */
 function observeListingMutations() {
@@ -780,16 +961,14 @@ function observeListingMutations() {
     if (currentPageType !== 'listing') return;
     clearTimeout(listingDebounceTimer);
     listingDebounceTimer = setTimeout(() => {
-      const cards = document.querySelectorAll('a[href^="/property/"]');
+      const cards = document.querySelectorAll(PROPERTY_LINK_SELECTOR);
       const hasMissing = [...cards].some(link => {
         return link && !link.querySelector(`[${BADGE_ATTR}]`);
       });
-      const headerMissing = !document.querySelector(`[${HEADER_ATTR}]`);
-      if (hasMissing || headerMissing) processListingPage();
+      if (hasMissing) processListingPage();
     }, LISTING_MUTATION_DEBOUNCE_MS);
   });
-  const content = document.querySelector('.layout-container-content') || document.body;
-  listingObserver.observe(content, { childList: true, subtree: true });
+  listingObserver.observe(document.body, { childList: true, subtree: true });
 }
 
 // ===========================================================================
@@ -825,11 +1004,11 @@ function getSlugFromPath(path) {
 function handleRouteChange() {
   const pageType = getPageType(location.pathname);
   const newSlug = getSlugFromPath(location.pathname);
-
   // --- Cleanup: tear down previous page state ---
   if (currentPageType === 'property' && pageType !== 'property') {
     currentSlug = null;
     removeWidget();
+    disconnectWidgetObserver();
   }
   if (currentPageType === 'listing' && pageType !== 'listing') {
     removeAllBadges();
@@ -840,6 +1019,7 @@ function handleRouteChange() {
   currentPageType = pageType;
 
   if (pageType === 'property') {
+    connectWidgetObserver();
     if (newSlug && newSlug !== currentSlug) {
       currentSlug = newSlug;
       injectPartnerSummary(newSlug);
@@ -848,8 +1028,12 @@ function handleRouteChange() {
     }
   } else if (pageType === 'listing') {
     currentSlug = null;
-    processListingPage();
-    observeListingMutations();
+    waitForListingCards(async () => {
+      if (currentPageType !== 'listing') return;
+      await processListingPage();
+      if (currentPageType !== 'listing') return;
+      observeListingMutations();
+    });
   } else {
     currentSlug = null;
   }
@@ -874,13 +1058,21 @@ window.addEventListener('hashchange', () => {
   if (currentSlug) ensureWidgetPresent(currentSlug);
 });
 
-// Re-inject widget if React removes it during DOM reconciliation (debounced)
-new MutationObserver(() => {
-  if (currentPageType === 'property' && currentSlug && !document.getElementById(WIDGET_ID)) {
-    clearTimeout(reinsertTimer);
-    reinsertTimer = setTimeout(() => ensureWidgetPresent(currentSlug), WIDGET_REINSERTION_DEBOUNCE_MS);
-  }
-}).observe(document.body, { childList: true, subtree: true });
+/**
+ * Connects the widget observer to watch for React DOM reconciliation removing the widget.
+ * Only needed on property detail pages.
+ */
+function connectWidgetObserver() {
+  widgetObserver.observe(document.body, { childList: true, subtree: true });
+}
+
+/**
+ * Disconnects the widget observer to stop watching for widget removal.
+ */
+function disconnectWidgetObserver() {
+  widgetObserver.disconnect();
+  clearTimeout(reinsertTimer);
+}
 
 // ===========================================================================
 // Bootstrap — must be after all declarations to avoid TDZ
@@ -894,23 +1086,25 @@ new MutationObserver(() => {
  * @param {function} callback - The function to call once the page is ready.
  */
 function onPageReady(callback) {
+  const pageType = getPageType(location.pathname);
+
+  if (pageType === 'listing') {
+    waitForListingCards(callback);
+    return;
+  }
+
   const isReady = () => {
-    const pageType = getPageType(location.pathname);
     if (pageType === 'property') {
-      return [...document.querySelectorAll('span, div')].some(
-        el => el.textContent.trim() === 'Investice' && isInSidebar(el)
-      );
-    }
-    if (pageType === 'listing') {
-      return document.querySelectorAll('a[href^="/property/"]').length > 0;
+      return findElementsByText(document.body, 'Investice').some(el => isInSidebar(el));
     }
     return true;
   };
   if (isReady()) { callback(); return; }
   const readinessObserver = new MutationObserver(() => {
-    if (isReady()) { readinessObserver.disconnect(); callback(); }
+    if (isReady()) { readinessObserver.disconnect(); clearTimeout(readinessTimeout); callback(); }
   });
   readinessObserver.observe(document.body, { childList: true, subtree: true });
+  const readinessTimeout = setTimeout(() => readinessObserver.disconnect(), 30_000);
 }
 
 onPageReady(() => handleRouteChange());
