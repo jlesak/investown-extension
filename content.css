@@ -1,21 +1,26 @@
 /* ===========================================================================
  * Investown Partner Summary — Chrome Extension Styles
+ * Designed to match native Investown UI (layout-container-content sections)
  * =========================================================================== */
 
 /* ---------------------------------------------------------------------------
  * CSS Custom Properties (scoped to extension selectors)
+ * Aligned with native Investown design tokens
  * --------------------------------------------------------------------------- */
 
 #investown-ext-partner-summary,
-.ext-partner-col,
-.ext-partner-col-header {
-  --ext-color-primary: #1551E5;
-  --ext-color-bg-light: #F0F7FF;
-  --ext-color-border: #DBEAFE;
-  --ext-color-text-dark: #1F2937;
-  --ext-color-text-darkest: #04102A;
-  --ext-color-text-secondary: #6B7280;
-  --ext-color-text-muted: #9CA3AF;
+.ext-partner-badge,
+.ext-partner-badge--new {
+  --ext-color-primary: rgb(25, 97, 255);
+  --ext-color-text-dark: rgb(4, 16, 42);
+  --ext-color-text-secondary: rgb(75, 85, 101);
+  --ext-color-text-muted: rgb(105, 117, 134);
+  --ext-color-safe: #059669;
+  --ext-color-safe-light: #ECFDF5;
+  --ext-color-safe-border: #A7F3D0;
+  --ext-color-warning: #D97706;
+  --ext-color-danger: #DC2626;
+  --ext-color-repaid: #6B7280;
 }
 
 /* ---------------------------------------------------------------------------
@@ -30,118 +35,165 @@
 
 /* ---------------------------------------------------------------------------
  * Property Detail — Partner Summary Widget
+ * Sits inside the sidebar .layout-container (white card) as a sibling section
+ * to the native "Investice" content block.
  * --------------------------------------------------------------------------- */
 
 #investown-ext-partner-summary {
-  background: var(--ext-color-bg-light);
-  border: 1px solid var(--ext-color-border);
-  border-left: 3px solid var(--ext-color-primary);
-  border-radius: 12px;
-  padding: 16px;
-  margin-bottom: 16px;
+  background: rgba(25, 97, 255, 0.04);
+  border: none;
+  border-radius: 0;
+  padding: 32px;
+  padding-bottom: 24px;
   font-family: inherit;
   color: var(--ext-color-text-dark);
-  line-height: 1.5;
+  line-height: 1.2;
 }
 
-#investown-ext-partner-summary .ext-partner-title {
-  font-size: 13px;
-  font-weight: 600;
+#investown-ext-partner-summary .ext-partner-heading {
+  display: block;
+  font-size: 18px;
+  font-weight: 400;
+  color: var(--ext-color-text-dark);
+  line-height: 21.6px;
+  margin-bottom: 16px;
+}
+
+#investown-ext-partner-summary .ext-partner-name {
+  font-size: 16px;
+  font-weight: 500;
   color: var(--ext-color-primary);
+  line-height: 19.2px;
   margin-bottom: 12px;
+  max-width: 100%;
 }
 
 #investown-ext-partner-summary .ext-partner-row {
   display: flex;
   justify-content: space-between;
-  align-items: baseline;
-  padding: 4px 0;
+  align-items: center;
+  padding: 0;
 }
 
 #investown-ext-partner-summary .ext-partner-label {
-  font-size: 13px;
+  font-size: 16px;
+  font-weight: 400;
   color: var(--ext-color-text-secondary);
+  line-height: 19.2px;
 }
 
 #investown-ext-partner-summary .ext-partner-value {
-  font-size: 14px;
-  font-weight: 600;
+  font-size: 16px;
+  font-weight: 400;
   color: var(--ext-color-text-dark);
+  line-height: 19.2px;
   white-space: nowrap;
 }
 
 #investown-ext-partner-summary .ext-partner-value--highlight {
-  color: var(--ext-color-primary);
+  color: var(--ext-color-text-dark);
+  font-weight: 500;
 }
 
-#investown-ext-partner-summary .ext-partner-divider {
-  height: 1px;
-  background: var(--ext-color-border);
-  margin: 8px 0;
+#investown-ext-partner-summary .ext-partner-value--safe {
+  color: var(--ext-color-safe);
+}
+
+#investown-ext-partner-summary .ext-partner-value--warning {
+  color: var(--ext-color-warning);
+}
+
+#investown-ext-partner-summary .ext-partner-value--danger {
+  color: var(--ext-color-danger);
+}
+
+#investown-ext-partner-summary .ext-partner-row--repayment {
+  flex-wrap: wrap;
+}
+
+#investown-ext-partner-summary .ext-partner-repayment {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 16px;
+  line-height: 19.2px;
+}
+
+#investown-ext-partner-summary .ext-repayment--regular {
+  color: var(--ext-color-safe);
+}
+
+#investown-ext-partner-summary .ext-repayment--delayed {
+  color: var(--ext-color-warning);
+}
+
+#investown-ext-partner-summary .ext-repayment--collection {
+  color: var(--ext-color-danger);
+}
+
+#investown-ext-partner-summary .ext-repayment--repaid {
+  color: var(--ext-color-repaid);
+}
+
+/* Spacer between rows — matches native empty <span> spacers */
+#investown-ext-partner-summary .ext-partner-spacer {
+  display: block;
+  min-height: 12px;
+}
+
+#investown-ext-partner-summary .ext-partner-spacer--lg {
+  min-height: 16px;
 }
 
 #investown-ext-partner-summary .ext-partner-error {
-  font-size: 13px;
+  font-size: 16px;
   color: var(--ext-color-text-muted);
   text-align: center;
   padding: 8px 0;
 }
 
 /* ---------------------------------------------------------------------------
- * Listing Page — Partner Column (badge per card row)
+ * Listing Page — Partner Badge (inside yield column of each card)
  * --------------------------------------------------------------------------- */
 
-.ext-partner-col {
+.ext-partner-badge {
   display: flex;
   flex-direction: column;
-  justify-content: center;
-  flex: 1 1 0%;
-  min-width: 100px;
-  max-width: 100px;
-  gap: 2px;
-  padding-left: 8px;
+  gap: 1px;
+  margin-top: 6px;
+  padding-top: 5px;
+  border-top: 1px solid rgba(75, 85, 101, 0.15);
   pointer-events: none;
-  box-sizing: border-box;
+  line-height: 1.2;
 }
 
-.ext-partner-col .ext-col-name {
-  font-size: 13px;
+.ext-partner-badge .ext-badge-label {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--ext-color-text-muted);
+  letter-spacing: 0.01em;
+}
+
+.ext-partner-badge .ext-badge-value {
+  font-size: 12px;
   font-weight: 600;
   color: var(--ext-color-primary);
-  line-height: 1.3;
+  white-space: nowrap;
 }
 
-.ext-partner-col .ext-col-investment {
-  font-size: 14px;
+/* Yield column override — stack badge below yield text */
+.ext-yield-col--stacked { flex-direction: column !important; }
+
+/* New partner — subtle green indicator */
+.ext-partner-badge--new {
+  display: block;
+  margin-top: 6px;
+  padding-top: 5px;
+  border-top: 1px solid var(--ext-color-safe-border);
+  font-size: 11px;
   font-weight: 600;
-  color: var(--ext-color-text-darkest);
-  white-space: nowrap;
-  line-height: 1.3;
-}
-
-.ext-partner-col .ext-col-projects {
-  font-size: 12px;
-  color: var(--ext-color-text-secondary);
-  white-space: nowrap;
-  line-height: 1.3;
-}
-
-/* ---------------------------------------------------------------------------
- * Listing Page — Partner Column Header
- * --------------------------------------------------------------------------- */
-
-.ext-partner-col-header {
-  display: flex;
-  flex: 1 1 0%;
-  min-width: 100px;
-  max-width: 100px;
-  align-items: center;
-  padding-left: 8px;
-  box-sizing: border-box;
-}
-
-.ext-partner-col-header .ext-col-header-label {
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--ext-color-text-darkest);
+  color: var(--ext-color-safe);
+  letter-spacing: 0.02em;
+  line-height: 1.2;
+  pointer-events: none;
 }
